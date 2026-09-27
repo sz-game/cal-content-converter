@@ -1,0 +1,544 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Google Docs to Exact Article HTML</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#f4f7fb;color:#1f2937}
+.wrap{max-width:1500px;margin:auto;padding:24px}
+.page-title{margin:0 0 8px;font-size:28px}
+.sub{margin:0;color:#64748b;line-height:1.6}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}
+button{border:0;border-radius:8px;padding:11px 16px;font-weight:700;cursor:pointer}
+.primary{background:#2563eb;color:#fff}.success{background:#059669;color:#fff}.secondary{background:#e2e8f0;color:#111827}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.card{background:#fff;border:1px solid #dbe3ee;border-radius:12px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.05)}
+.card h2{margin:0;padding:14px 16px;font-size:17px;background:#eef4ff;border-bottom:1px solid #dbe3ee}
+#editor{min-height:700px;padding:18px;outline:none;overflow:auto;line-height:1.6;background:#fff}
+#editor:empty:before{content:attr(data-placeholder);color:#94a3b8}
+#editor a{color:#2563eb;text-decoration:underline}
+#editor table{border-collapse:collapse;width:100%}
+#editor th,#editor td{border:1px solid #cbd5e1;padding:7px}
+#output{width:100%;min-height:700px;resize:vertical;border:0;outline:0;padding:16px;font-family:Consolas,Monaco,monospace;font-size:13px;line-height:1.55;background:#0f172a;color:#e2e8f0}
+.status{min-height:22px;margin-top:12px;color:#047857;font-weight:700;font-size:14px}
+.note{margin-top:16px;padding:14px 16px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;color:#9a3412;line-height:1.55}
+@media(max-width:900px){.grid{grid-template-columns:1fr}#editor,#output{min-height:500px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page-title">Google Docs → Exact Article HTML</h1>
+  <p class="sub">Google Docs se normal Ctrl+C → Ctrl+V karein. Tool paragraph breaks, headings, links, bold text, lists, tables, formulas aur FAQs ko detect karega.</p>
+
+  <div class="toolbar">
+    <button class="primary" onclick="convertContent()">Convert to HTML</button>
+    <button class="success" onclick="copyOutput()">Copy Output</button>
+    <button class="secondary" onclick="downloadOutput()">Download HTML</button>
+    <button class="secondary" onclick="clearAll()">Clear</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Paste From Google Docs</h2>
+      <div id="editor" contenteditable="true" data-placeholder="Google Docs se content yahan paste karein..."></div>
+    </div>
+
+    <div class="card">
+      <h2>Generated HTML</h2>
+      <textarea id="output" readonly placeholder="Exact formatted HTML yahan aayega..."></textarea>
+    </div>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <div class="note">
+    Normal paste use karein. Ctrl+Shift+V / Paste as plain text use na karein, warna links aur formatting clipboard se remove ho sakti hai.
+  </div>
+</div>
+
+<script>
+let lastClipboardHTML = "";
+
+document.getElementById("editor").addEventListener("paste", e => {
+  const html = e.clipboardData && e.clipboardData.getData("text/html");
+  if (html) lastClipboardHTML = html;
+});
+
+function esc(s){
+  return String(s)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;");
+}
+function escAttr(s){ return esc(s).replace(/"/g,"&quot;"); }
+
+function inlineHTML(node){
+  if(!node) return "";
+  if(node.nodeType===Node.TEXT_NODE) return esc(node.nodeValue||"");
+  if(node.nodeType!==Node.ELEMENT_NODE) return "";
+
+  const tag=node.tagName;
+  const content=[...node.childNodes].map(inlineHTML).join("");
+
+  if(tag==="A"){
+    const href=node.getAttribute("href")||"";
+    return href ? '<a href="'+escAttr(href)+'" rel="noopener" target="_blank">'+content+'</a>' : content;
+  }
+  if(tag==="B"||tag==="STRONG") return "<strong>"+content+"</strong>";
+  if(tag==="I"||tag==="EM") return "<em>"+content+"</em>";
+  if(tag==="CODE") return "<code>"+content+"</code>";
+  if(tag==="SUP") return "<sup>"+content+"</sup>";
+  if(tag==="SUB") return "<sub>"+content+"</sub>";
+  if(tag==="BR") return "<br>";
+  return content;
+}
+
+function cleanText(s){
+  return String(s||"").replace(/\u00a0/g," ").replace(/\s+/g," ").trim();
+}
+
+function hasBlockChildren(el){
+  return [...el.children].some(c =>
+    ["H1","H2","H3","H4","H5","H6","P","DIV","OL","UL","TABLE","BLOCKQUOTE"].includes(c.tagName)
+  );
+}
+
+function splitByBreaks(el){
+  const html=el.innerHTML;
+  if(!/<br\s*\/?>/i.test(html)) return null;
+
+  const parts=html.split(/(?:<br\s*\/?>\s*)+/i)
+    .map(x=>x.trim())
+    .filter(Boolean);
+
+  if(parts.length<=1) return null;
+
+  return parts.map(part=>{
+    const p=document.createElement("p");
+    p.innerHTML=part;
+    return p;
+  });
+}
+
+function collectBlocks(root){
+  const out=[];
+
+  function walk(node){
+    if(node.nodeType===Node.TEXT_NODE){
+      const txt=cleanText(node.nodeValue);
+      if(txt){
+        const p=document.createElement("p");
+        p.textContent=txt;
+        out.push(p);
+      }
+      return;
+    }
+    if(node.nodeType!==Node.ELEMENT_NODE) return;
+
+    const tag=node.tagName;
+
+    if(["H1","H2","H3","H4","H5","H6","P","OL","UL","TABLE"].includes(tag)){
+      if(tag==="P"){
+        const split=splitByBreaks(node);
+        if(split && split.length>1){ split.forEach(x=>out.push(x)); return; }
+      }
+      out.push(node);
+      return;
+    }
+
+    if(tag==="DIV" || tag==="SECTION" || tag==="ARTICLE"){
+      if(hasBlockChildren(node)){
+        [...node.childNodes].forEach(walk);
+      }else{
+        const split=splitByBreaks(node);
+        if(split && split.length>1){ split.forEach(x=>out.push(x)); }
+        else if(cleanText(node.textContent)){
+          const p=document.createElement("p");
+          p.innerHTML=node.innerHTML;
+          out.push(p);
+        }
+      }
+      return;
+    }
+
+    [...node.childNodes].forEach(walk);
+  }
+
+  [...root.childNodes].forEach(walk);
+  return out;
+}
+
+function metaValue(block,label){
+  const text=cleanText(block.textContent);
+  const re=new RegExp("^"+label+"\\s*:\\s*(.*)$","i");
+  const m=text.match(re);
+  return m ? m[1].trim() : null;
+}
+
+function getLeafStyle(el){
+  let best=el;
+  const walker=document.createTreeWalker(el,NodeFilter.SHOW_ELEMENT);
+  let n;
+  while(n=walker.nextNode()){
+    if(cleanText(n.textContent)){ best=n; break; }
+  }
+  const cs=getComputedStyle(best);
+  return {
+    size:parseFloat(cs.fontSize)||16,
+    weight:parseInt(cs.fontWeight)||400,
+    bg:cs.backgroundColor||"transparent"
+  };
+}
+
+function wholeBlockBold(el){
+  const text=cleanText(el.textContent);
+  if(!text) return false;
+
+  const clone=el.cloneNode(true);
+  clone.querySelectorAll("strong,b").forEach(x=>x.replaceWith(...x.childNodes));
+  const outside=cleanText(clone.textContent);
+
+  // If original has strong/b and almost all visible text sits in them
+  const boldText=[...el.querySelectorAll("strong,b")].map(x=>cleanText(x.textContent)).join(" ");
+  if(boldText && cleanText(boldText)===text) return true;
+
+  const s=getLeafStyle(el);
+  return s.weight>=600;
+}
+
+function knownH2(text){
+  const t=text.toLowerCase().trim();
+  return (
+    t.startsWith("what is ") ||
+    t.startsWith("how to use ") ||
+    t==="formula / calculation method" ||
+    t==="formula/calculation method" ||
+    t==="worked example" ||
+    t==="calculation example" ||
+    t==="understanding your results" ||
+    t==="assumptions and limitations" ||
+    t==="frequently asked questions" ||
+    t.endsWith(" calculator faqs") ||
+    t==="sources & methodology" ||
+    t==="sources and methodology" ||
+    t==="related tools" ||
+    /^current .*(reference data|rules and limits|data|rules)$/i.test(text)
+  );
+}
+
+function knownH3(text){
+  const t=text.toLowerCase().trim();
+  return (
+    t==="main formula" ||
+    t==="variables" ||
+    t==="calculation sequence" ||
+    t==="inputs" ||
+    t==="final result" ||
+    t==="scientific expression" ||
+    t==="formula / methodology sources" ||
+    t==="current data / rule sources" ||
+    /^step\s+\d+/i.test(text) ||
+    /^step\s+\d+\s*:/i.test(text) ||
+    /^year\s+\d+/i.test(text)
+  );
+}
+
+function headingLevel(block){
+  const tag=block.tagName;
+  if(/^H[1-6]$/.test(tag)) return parseInt(tag[1]);
+
+  const text=cleanText(block.textContent);
+  if(!text || text.length>140) return 0;
+
+  if(knownH2(text)) return 2;
+  if(knownH3(text)) return 3;
+
+  const s=getLeafStyle(block);
+  const bold=wholeBlockBold(block);
+
+  if(bold && s.size>=20) return 2;
+  if(bold && s.size>=15 && text.length<=100) return 3;
+
+  return 0;
+}
+
+function sectionId(title){
+  const t=title.toLowerCase().trim();
+
+  if(t.startsWith("what is ")) return "what";
+  if(t.startsWith("how to use ")) return "how";
+  if(t.includes("formula") && t.includes("calculation")) return "formula";
+  if(t.includes("worked example")||t.includes("calculation example")) return "example";
+  if(t.includes("understanding your results")) return "results";
+  if(t.includes("assumptions and limitations")) return "limits";
+  if(t.includes("frequently asked questions")||t.includes("faqs")) return "faq";
+  if(t.includes("sources")||t.includes("methodology")) return "sources";
+  if(t.includes("related tools")) return "related";
+  if(t.startsWith("current ")) return "current-data";
+
+  return t.replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"") || "section";
+}
+
+function likelyFormula(block){
+  if(block.tagName!=="P") return false;
+  const text=cleanText(block.textContent);
+  if(!text || text.length>320) return false;
+
+  const bold=wholeBlockBold(block);
+  const math=/[=÷×√π∑Γ^]|≤|≥|≈|≠|\\frac|\\times|\\sqrt|\\ln|\\log|\\sin|\\cos|\\tan|\\exp|\\boxed|\\min|\\sum/.test(text);
+
+  return bold && math;
+}
+
+function listHTML(list,indent,sourceList){
+  const tag=list.tagName.toLowerCase();
+  let h=indent+"<"+tag+(sourceList && tag==="ul" ? ' class="sources"' : '')+">\n";
+
+  [...list.children].forEach(li=>{
+    if(li.tagName!=="LI") return;
+    h+=indent+"  <li>"+inlineHTML(li).trim()+"</li>\n";
+  });
+
+  h+=indent+"</"+tag+">";
+  return h;
+}
+
+function tableHTML(table,indent){
+  const rows=[...table.rows];
+  if(!rows.length) return "";
+
+  let h=indent+"<table>\n";
+  h+=indent+"  <thead>\n"+indent+"    <tr>\n";
+
+  [...rows[0].cells].forEach(c=>{
+    h+=indent+"      <th>"+inlineHTML(c).trim()+"</th>\n";
+  });
+
+  h+=indent+"    </tr>\n"+indent+"  </thead>\n";
+  h+=indent+"  <tbody>\n";
+
+  rows.slice(1).forEach(r=>{
+    h+=indent+"    <tr>\n";
+    [...r.cells].forEach(c=>{
+      h+=indent+"      <td>"+inlineHTML(c).trim()+"</td>\n";
+    });
+    h+=indent+"    </tr>\n";
+  });
+
+  h+=indent+"  </tbody>\n"+indent+"</table>";
+  return h;
+}
+
+function buildParseRoot(){
+  // Prefer the actual editable DOM because computed styles help identify headings.
+  return document.getElementById("editor");
+}
+
+function convertContent(){
+  const editor=document.getElementById("editor");
+  const status=document.getElementById("status");
+
+  if(!cleanText(editor.innerText)){
+    status.textContent="Pehle content paste karein.";
+    return;
+  }
+
+  const blocks=collectBlocks(buildParseRoot());
+
+  if(!blocks.length){
+    status.textContent="Content detect nahi hua.";
+    return;
+  }
+
+  let metaTitle="",metaDescription="",h1="",intro=null;
+  let firstH2Index=-1;
+
+  // First pass: metadata / title / first section
+  for(let i=0;i<blocks.length;i++){
+    const b=blocks[i];
+    const txt=cleanText(b.textContent);
+    const level=headingLevel(b);
+
+    if(!metaTitle){
+      const v=metaValue(b,"Meta Title");
+      if(v!==null) metaTitle=v;
+    }
+    if(!metaDescription){
+      const v=metaValue(b,"Meta Description");
+      if(v!==null) metaDescription=v;
+    }
+
+    if(firstH2Index<0 && level===2) firstH2Index=i;
+
+    if(!h1 && level===1){
+      h1=txt;
+    }
+  }
+
+  // Fallback H1: first short bold line ending in Calculator before first H2
+  if(!h1){
+    const limit=firstH2Index>=0 ? firstH2Index : Math.min(blocks.length,10);
+    for(let i=0;i<limit;i++){
+      const txt=cleanText(blocks[i].textContent);
+      if(/calculator$/i.test(txt) && txt.length<80 && wholeBlockBold(blocks[i])){
+        h1=txt;
+        break;
+      }
+    }
+  }
+
+  // Intro: last normal paragraph before first H2, excluding metadata/H1
+  if(firstH2Index>0){
+    for(let i=0;i<firstH2Index;i++){
+      const b=blocks[i],txt=cleanText(b.textContent);
+      if(!txt) continue;
+      if(metaValue(b,"Meta Title")!==null || metaValue(b,"Meta Description")!==null) continue;
+      if(txt===h1) continue;
+      if(headingLevel(b)===0) intro=b;
+    }
+  }
+
+  let out='<article class="article">\n';
+
+  if(metaTitle) out+='  <p><strong>Meta Title:</strong> '+esc(metaTitle)+'</p>\n\n';
+  if(metaDescription) out+='  <p><strong>Meta Description:</strong> '+esc(metaDescription)+'</p>\n\n';
+  if(h1) out+='  <h1>'+esc(h1)+'</h1>\n\n';
+  if(intro) out+='  <p>'+inlineHTML(intro).trim()+'</p>\n\n';
+
+  let currentSection=null;
+  let currentId="";
+  let inFaq=false;
+  let faqOpen=false;
+
+  function closeFaq(){
+    if(faqOpen){
+      out+='    </details>\n\n';
+      faqOpen=false;
+    }
+  }
+
+  function closeSection(){
+    closeFaq();
+    if(currentSection){
+      out+='  </section>\n\n';
+      currentSection=null;
+      currentId="";
+      inFaq=false;
+    }
+  }
+
+  for(let i=0;i<blocks.length;i++){
+    const b=blocks[i];
+    const txt=cleanText(b.textContent);
+
+    if(!txt && b.tagName!=="TABLE") continue;
+    if(metaValue(b,"Meta Title")!==null || metaValue(b,"Meta Description")!==null) continue;
+    if(txt===h1) continue;
+    if(b===intro) continue;
+
+    const level=headingLevel(b);
+
+    if(level===2){
+      closeSection();
+      currentSection=txt;
+      currentId=sectionId(txt);
+      inFaq=currentId==="faq";
+
+      out+='  <section id="'+currentId+'">\n';
+      out+='    <h2>'+inlineHTML(b).trim()+'</h2>\n\n';
+      continue;
+    }
+
+    // Ignore material before the first real section, except metadata/title/intro already handled
+    if(!currentSection) continue;
+
+    if(level===3 || (inFaq && wholeBlockBold(b) && txt.length<=140 && b.tagName==="P")){
+      if(inFaq){
+        closeFaq();
+        out+='    <details class="faq">\n';
+        out+='      <summary>'+inlineHTML(b).trim().replace(/^<strong>|<\/strong>$/g,"")+'</summary>\n';
+        faqOpen=true;
+      }else{
+        out+='    <h3>'+inlineHTML(b).trim().replace(/^<strong>|<\/strong>$/g,"")+'</h3>\n\n';
+      }
+      continue;
+    }
+
+    if(b.tagName==="OL" || b.tagName==="UL"){
+      const indent=(inFaq&&faqOpen)?"      ":"    ";
+      out+=listHTML(b,indent,currentId==="sources")+"\n\n";
+      continue;
+    }
+
+    if(b.tagName==="TABLE"){
+      const indent=(inFaq&&faqOpen)?"      ":"    ";
+      out+=tableHTML(b,indent)+"\n\n";
+      continue;
+    }
+
+    // Normal paragraph or formula
+    if(likelyFormula(b)){
+      let f=inlineHTML(b).trim();
+      f=f.replace(/^<strong>/,"").replace(/<\/strong>$/,"");
+      const indent=(inFaq&&faqOpen)?"      ":"    ";
+      out+=indent+'<div class="formula">'+f+'</div>\n'+((inFaq&&faqOpen)?"":"\n");
+    }else{
+      const p=inlineHTML(b).trim();
+      if(!p) continue;
+      const indent=(inFaq&&faqOpen)?"      ":"    ";
+      out+=indent+'<p>'+p+'</p>\n'+((inFaq&&faqOpen)?"":"\n");
+    }
+  }
+
+  closeSection();
+
+  out=out.trimEnd()+"\n</article>";
+  document.getElementById("output").value=out;
+  status.textContent="Exact section format mein convert ho gaya.";
+}
+
+async function copyOutput(){
+  const value=document.getElementById("output").value;
+  const status=document.getElementById("status");
+  if(!value){ status.textContent="Pehle HTML generate karein."; return; }
+
+  try{
+    await navigator.clipboard.writeText(value);
+  }catch(e){
+    const box=document.getElementById("output");
+    box.select();
+    document.execCommand("copy");
+  }
+  status.textContent="HTML copy ho gaya.";
+}
+
+function downloadOutput(){
+  const value=document.getElementById("output").value;
+  const status=document.getElementById("status");
+  if(!value){ status.textContent="Pehle HTML generate karein."; return; }
+
+  const blob=new Blob([value],{type:"text/html;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download="article-content.html";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  status.textContent="HTML file download ho gayi.";
+}
+
+function clearAll(){
+  document.getElementById("editor").innerHTML="";
+  document.getElementById("output").value="";
+  document.getElementById("status").textContent="";
+  lastClipboardHTML="";
+}
+</script>
+</body>
+</html>
